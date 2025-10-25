@@ -6,6 +6,7 @@ esphome:
 
 # Enable logging
 logger:
+  level: DEBUG
 
 # Enable Home Assistant API
 api:
@@ -18,15 +19,24 @@ wifi:
   ssid: "YourSSID"
   password: "YourPassword"
 
+# UART configuration (9600 8N1)
+uart:
+  tx_pin: GPIO1
+  rx_pin: GPIO3
+  baud_rate: 9600
+
 # HubSpace component
 hubspace:
+  id: hubspace_hub
 
 # Fan configuration
 fan:
   - platform: hubspace
     name: "HubSpace Fan"
+    hubspace_id: hubspace_hub
 
 # Light configuration
 light:
   - platform: hubspace
     name: "HubSpace Light"
+    hubspace_id: hubspace_hub
