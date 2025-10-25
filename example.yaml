@@ -1,0 +1,32 @@
+# Example ESPHome configuration for HubSpace Fan/Light
+esphome:
+  name: hubspace-fan-light
+  platform: ESP8266
+  board: esp01_1m
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+
+# Enable OTA updates
+ota:
+
+# WiFi configuration
+wifi:
+  ssid: "YourSSID"
+  password: "YourPassword"
+
+# HubSpace component
+hubspace:
+
+# Fan configuration
+fan:
+  - platform: hubspace
+    name: "HubSpace Fan"
+
+# Light configuration
+light:
+  - platform: hubspace
+    name: "HubSpace Light"
