@@ -14,7 +14,7 @@ class HubSpaceFan : public fan::Fan, public Component {
   fan::FanTraits get_traits() override;
 
   void set_parent(HubSpaceComponent *parent) { this->parent_ = parent; }
-  void update_from_slave(uint8_t fan_code, uint8_t stage);
+  void update_from_slave(FanStatus status);
 
  protected:
   void control(const fan::FanCall &call) override;
@@ -23,6 +23,15 @@ class HubSpaceFan : public fan::Fan, public Component {
   bool is_direction_reverse(uint8_t stage);
 
   HubSpaceComponent *parent_{nullptr};
+  
+  // Track pending changes to avoid update loops
+  struct PendingChange {
+    bool has_speed_change{false};
+    FanSpeed expected_speed{FAN_OFF};
+    bool has_direction_change{false};
+    FanDirection expected_direction{DIRECTION_FORWARD};
+  };
+  PendingChange pending_change_;
 };
 
 }  // namespace hubspace

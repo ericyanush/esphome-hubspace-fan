@@ -12,20 +12,18 @@ static const char *const TAG = "hubspace";
 static const uint8_t START_BYTE = 0x20;
 static const uint8_t MASTER_FRAME_LEN = 5;
 static const uint8_t SLAVE_FRAME_LEN = 12;
-static const uint32_t KEEPALIVE_INTERVAL_MS = 200;  // ~5 Hz
+static const uint32_t KEEPALIVE_INTERVAL_MS = 200;  // 5 Hz
 
 void HubSpaceComponent::setup() {
   ESP_LOGCONFIG(TAG, "Setting up HubSpace...");
+  this->send_boot_sequence();
 }
 
 void HubSpaceComponent::loop() {
   const uint32_t now = millis();
   
-  // Send boot sequence once, about 2.4s after startup
-  if (!this->boot_sent_ && now > 2400) {
-    this->send_boot_sequence();
-    this->boot_sent_ = true;
-  }
+  // Process command queue
+  this->process_command_queue();
   
   // Send keepalive every ~200ms
   if (now - this->last_keepalive_ >= KEEPALIVE_INTERVAL_MS) {
@@ -84,11 +82,79 @@ void HubSpaceComponent::send_command(uint8_t cmd, uint8_t high, uint8_t low) {
   this->write_array(frame, MASTER_FRAME_LEN);
   this->flush();
   
+  this->last_command_sent_ = millis();
+  
   ESP_LOGV(TAG, "TX: %02X %02X %02X %02X %02X", frame[0], frame[1], frame[2], frame[3], frame[4]);
 }
 
+void HubSpaceComponent::queue_command(uint8_t cmd, uint8_t high, uint8_t low) {
+  // Check if this command is already in the queue (avoid duplicates)
+  for (auto &queued_cmd : this->command_queue_) {
+    if (queued_cmd.cmd == cmd) {
+      // Update existing command with new values
+      queued_cmd.high = high;
+      queued_cmd.low = low;
+      queued_cmd.queued_time = millis();
+      ESP_LOGV(TAG, "Updated queued command: 0x%02X %02X %02X", cmd, high, low);
+      return;
+    }
+  }
+  
+  // Add new command to queue
+  QueuedCommand new_cmd = {cmd, high, low, millis()};
+  this->command_queue_.push_back(new_cmd);
+  ESP_LOGV(TAG, "Queued command: 0x%02X %02X %02X", cmd, high, low);
+}
+
+void HubSpaceComponent::process_command_queue() {
+  if (this->command_queue_.empty()) {
+    return;
+  }
+  
+  uint32_t now = millis();
+  
+  // If we're waiting for a response, check for timeout
+  if (this->pending_response_cmd_ != 0) {
+    if (now - this->pending_cmd_sent_time_ > COMMAND_TIMEOUT_MS) {
+      ESP_LOGW(TAG, "Command 0x%02X timed out, proceeding to next command", this->pending_response_cmd_);
+      this->pending_response_cmd_ = 0;  // Clear timeout and continue
+    } else {
+      return;  // Still waiting for response
+    }
+  }
+  
+  // Check if enough time has passed since last command (fallback protection)
+  if (now - this->last_command_sent_ < COMMAND_INTERVAL_MS) {
+    return;
+  }
+  
+  // Send the first queued command
+  QueuedCommand &cmd = this->command_queue_.front();
+  this->send_command(cmd.cmd, cmd.high, cmd.low);
+  
+  // Track that we're waiting for a response to this command
+  this->pending_response_cmd_ = cmd.cmd;
+  this->pending_cmd_sent_time_ = now;
+  
+  ESP_LOGD(TAG, "Sent queued command: 0x%02X %02X %02X (queued for %dms), waiting for response", 
+           cmd.cmd, cmd.high, cmd.low, now - cmd.queued_time);
+  
+  // Remove the sent command from queue
+  this->command_queue_.erase(this->command_queue_.begin());
+}
+
 void HubSpaceComponent::send_keepalive() {
-  this->send_command(CMD_KEEPALIVE, 0x00, 0x00);
+  // Don't send keepalive if we're waiting for a command response
+  if (this->pending_response_cmd_ != 0) {
+    return;
+  }
+  
+  // Don't queue keepalive commands, send immediately if no recent commands
+  uint32_t now = millis();
+  if (now - this->last_command_sent_ >= COMMAND_INTERVAL_MS) {
+    this->send_command(CMD_KEEPALIVE, 0x00, 0x00);
+    // Don't set pending_response_cmd for keepalive as it may not always get a response
+  }
 }
 
 void HubSpaceComponent::send_boot_sequence() {
@@ -106,33 +172,23 @@ void HubSpaceComponent::send_boot_sequence() {
   this->send_command(CMD_BOOT_0E, 0x00, 0x00);
   delay(10);
   
-  // Resend last known state
-  this->send_command(CMD_FAN_SPEED, this->last_fan_speed_, 0x00);
-  delay(10);
-  this->send_command(CMD_BRIGHTNESS, this->last_brightness_, 0x00);
-  delay(10);
-  
   ESP_LOGD(TAG, "Boot sequence complete");
 }
 
-void HubSpaceComponent::send_fan_speed(uint8_t speed) {
-  this->last_fan_speed_ = speed;
-  this->send_command(CMD_FAN_SPEED, speed, 0x00);
+void HubSpaceComponent::send_fan_speed(FanSpeed speed) {
+  this->queue_command(CMD_FAN_SPEED, static_cast<uint8_t>(speed), 0x00);
 }
 
 void HubSpaceComponent::send_brightness(uint8_t brightness) {
-  this->last_brightness_ = brightness;
-  this->send_command(CMD_BRIGHTNESS, brightness, 0x00);
+  this->queue_command(CMD_BRIGHTNESS, brightness, 0x00);
 }
 
 void HubSpaceComponent::send_direction(bool reverse) {
-  this->last_direction_ = reverse;
-  this->send_command(CMD_DIRECTION, reverse ? 0x01 : 0x00, 0x00);
+  this->queue_command(CMD_DIRECTION, reverse ? 0x01 : 0x00, 0x00);
 }
 
-void HubSpaceComponent::send_color_temp(uint8_t temp_code) {
-  this->last_color_temp_ = temp_code;
-  this->send_command(CMD_COLOR_TEMP, temp_code, 0x00);
+void HubSpaceComponent::send_color_temp(ColorTemp temp_code) {
+  this->queue_command(CMD_COLOR_TEMP, static_cast<uint8_t>(temp_code), 0x00);
 }
 
 uint8_t HubSpaceComponent::calculate_checksum(const uint8_t *data, size_t len) {
@@ -156,32 +212,53 @@ bool HubSpaceComponent::parse_slave_frame(const std::vector<uint8_t> &frame, Sla
   }
   
   // Parse frame
-  status.status = frame[1];
-  status.rf_slot2 = frame[2];
-  status.rf_slot3 = frame[3];
+  status.response_cmd = frame[1];
+  status.reserved1 = frame[2];
+  status.reserved2 = frame[3];
   status.fan_code = frame[4];
   status.brightness = frame[5];
   status.color_code = frame[6];
   status.timer_minutes = frame[7] | (frame[8] << 8);  // Little endian
-  status.rf_slot9 = frame[9];
+  status.reserved3 = frame[9];
   status.stage = frame[10];
   
-  ESP_LOGV(TAG, "RX: status=%02X fan=%02X bright=%d color=%02X timer=%d stage=%02X",
-           status.status, status.fan_code, status.brightness, status.color_code, 
+  ESP_LOGV(TAG, "RX: response_cmd=%02X fan=%02X bright=%d color=%02X timer=%d stage=%02X",
+           status.response_cmd, status.fan_code, status.brightness, status.color_code, 
            status.timer_minutes, status.stage);
   
   return true;
 }
 
 void HubSpaceComponent::process_slave_status(const SlaveStatus &status) {
+  // Check if this response matches our pending command
+  if (this->pending_response_cmd_ != 0 && status.response_cmd == this->pending_response_cmd_) {
+    uint32_t response_time = millis() - this->pending_cmd_sent_time_;
+    ESP_LOGD(TAG, "Received response for command 0x%02X after %dms", status.response_cmd, response_time);
+    this->pending_response_cmd_ = 0;  // Clear pending response
+  } else if (this->pending_response_cmd_ != 0 && status.response_cmd != this->pending_response_cmd_) {
+    ESP_LOGV(TAG, "Received response 0x%02X while waiting for 0x%02X", 
+             status.response_cmd, this->pending_response_cmd_);
+  }
+  
+  this->device_status_ = DeviceStatus{
+    FanStatus{
+      static_cast<FanSpeed>(status.fan_code),
+      static_cast<FanDirection>(status.stage)
+    },
+    LightStatus{
+      status.brightness,
+      static_cast<ColorTemp>(status.color_code)
+    }
+  };
+
   // Update fan state if registered
   if (this->fan_ != nullptr) {
-    this->fan_->update_from_slave(status.fan_code, status.stage);
+    this->fan_->update_from_slave(this->device_status_->fan_status);
   }
   
   // Update light state if registered
   if (this->light_ != nullptr) {
-    this->light_->update_from_slave(status.brightness, status.color_code);
+    this->light_->update_from_slave(this->device_status_->light_status);
   }
 }
 

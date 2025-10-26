@@ -9,6 +9,7 @@ static const char *const TAG = "hubspace.light";
 // Color temperature range: 2700K to 6500K
 static const float MIN_KELVIN = 2700.0f;
 static const float MAX_KELVIN = 6500.0f;
+static const float MIRED_CONVERSION = 1000000.0f;
 
 void HubSpaceLight::setup() {
   ESP_LOGCONFIG(TAG, "Setting up HubSpace Light...");
@@ -21,9 +22,13 @@ void HubSpaceLight::dump_config() {
 light::LightTraits HubSpaceLight::get_traits() {
   auto traits = light::LightTraits();
   traits.set_supported_color_modes({light::ColorMode::COLOR_TEMPERATURE});
-  traits.set_min_mireds(esphome::light::color_temperature_kelvin_to_mired(MAX_KELVIN));
-  traits.set_max_mireds(esphome::light::color_temperature_kelvin_to_mired(MIN_KELVIN));
+  traits.set_min_mireds(MIRED_CONVERSION / MAX_KELVIN);
+  traits.set_max_mireds(MIRED_CONVERSION / MIN_KELVIN);
   return traits;
+}
+
+void HubSpaceLight::setup_state(light::LightState *state) {
+  state_ = state;
 }
 
 void HubSpaceLight::write_state(light::LightState *state) {
@@ -31,22 +36,26 @@ void HubSpaceLight::write_state(light::LightState *state) {
     ESP_LOGE(TAG, "Parent not set!");
     return;
   }
-
-  float brightness, color_temp;
-  state->current_values_as_brightness(&brightness);
-  state->current_values_as_ct(&color_temp);
+  
+  float brightness = state->current_values.get_brightness();
+  bool is_on = state->current_values.is_on();
+  float kelvin = state->current_values.get_color_temperature_kelvin();
   
   // Convert brightness to 0-100 scale
   uint8_t brightness_byte = static_cast<uint8_t>(brightness * 100.0f);
   
-  // Convert color temperature (mireds) to kelvin
-  float kelvin = esphome::light::color_temperature_mired_to_kelvin(color_temp);
   uint8_t color_code = this->kelvin_to_code(kelvin);
   
   ESP_LOGD(TAG, "Setting brightness to %d%%, color temp to %dK (code: 0x%02X)", 
            brightness_byte, static_cast<int>(kelvin), color_code);
   
-  this->parent_->send_brightness(brightness_byte);
+  // Track expected changes to prevent update loops
+  this->pending_change_.has_brightness_change = true;
+  this->pending_change_.expected_brightness = is_on ? brightness_byte : 0;
+  this->pending_change_.has_color_change = true;
+  this->pending_change_.expected_color_temp = static_cast<ColorTemp>(color_code);
+  
+  this->parent_->send_brightness(is_on ? brightness_byte : 0);
   this->parent_->send_color_temp(color_code);
 }
 
@@ -73,19 +82,75 @@ float HubSpaceLight::code_to_kelvin(uint8_t code) {
   }
 }
 
-void HubSpaceLight::update_from_slave(uint8_t brightness, uint8_t color_code) {
-  auto call = this->make_call();
+void HubSpaceLight::update_from_slave(LightStatus status) {
+  // Check if this update matches our pending changes
+  bool brightness_matches = !this->pending_change_.has_brightness_change || 
+                           (status.brightness == this->pending_change_.expected_brightness);
+  bool color_matches = !this->pending_change_.has_color_change || 
+                      (status.color_temp == this->pending_change_.expected_color_temp);
   
-  // Update brightness
-  float brightness_float = brightness / 100.0f;
-  call.set_brightness(brightness_float);
+  // Clear pending changes if slave has caught up
+  if (brightness_matches && this->pending_change_.has_brightness_change) {
+    ESP_LOGV(TAG, "Slave confirmed brightness change: %d%%", status.brightness);
+    this->pending_change_.has_brightness_change = false;
+  }
   
-  // Update color temperature
-  float kelvin = this->code_to_kelvin(color_code);
-  float mireds = esphome::light::color_temperature_kelvin_to_mired(kelvin);
-  call.set_color_temperature(mireds);
+  if (color_matches && this->pending_change_.has_color_change) {
+    ESP_LOGV(TAG, "Slave confirmed color temperature change: 0x%02X", status.color_temp);
+    this->pending_change_.has_color_change = false;
+  }
   
-  call.perform();
+  // Only process updates if no local changes are pending or if the update doesn't conflict
+  if (this->state_->current_values != this->state_->remote_values) {
+    ESP_LOGV(TAG, "Ignoring update from slave while local change is in progress");
+    return;
+  }
+
+  bool status_on = status.brightness > 0;
+  float status_brightness = status.brightness / 100.0f;
+
+  // Update brightness/state only if not waiting for our change to be reflected
+  if (brightness_matches) {
+    if (status_on != this->state_->current_values.get_state()) {
+      ESP_LOGV(TAG, "Updating light state from slave: brightness=%d%%",
+               status.brightness);
+      auto call = this->state_->make_call();
+      if (status_on) {
+        call.set_brightness(status_brightness);
+      }
+      call.set_state(status_brightness > 0.0f);
+      call.set_transition_length(0);  // Instant update
+      call.perform();
+    } else if (status_on && this->state_->current_values.get_brightness() != status_brightness) {
+      ESP_LOGV(TAG, "Updating light brightness from slave: brightness=%d%%",
+               status.brightness);
+      auto call = this->state_->make_call();
+      call.set_brightness(status_brightness);
+      call.set_transition_length(0);  // Instant update
+      call.perform();
+    }
+  } else {
+    ESP_LOGV(TAG, "Ignoring brightness update from slave (waiting for expected: %d%%, got: %d%%)",
+             this->pending_change_.expected_brightness, status.brightness);
+  }
+
+  // Update color temperature only if not waiting for our change to be reflected
+  if (color_matches) {
+    ColorTemp current_temp = this->kelvin_to_code(this->state_->current_values.get_color_temperature_kelvin());
+    if (current_temp != status.color_temp) {
+      ESP_LOGV(TAG, "Updating light color temperature from slave: color_temp_code=0x%02X",
+               status.color_temp);
+      auto call = this->state_->make_call();
+      float kelvin = this->code_to_kelvin(status.color_temp);
+      float mireds = MIRED_CONVERSION / kelvin;
+      call.set_color_temperature(mireds);
+      call.set_transition_length(0);  // Instant update
+      call.perform();
+    }
+  } else {
+    ESP_LOGV(TAG, "Ignoring color temperature update from slave (waiting for expected: 0x%02X, got: 0x%02X)",
+             this->pending_change_.expected_color_temp, status.color_temp);
+  }
 }
 
 }  // namespace hubspace

@@ -45,6 +45,10 @@ void HubSpaceFan::control(const fan::FanCall &call) {
     this->direction = *call.get_direction();
     bool reverse = (this->direction == fan::FanDirection::REVERSE);
     this->parent_->send_direction(reverse);
+    
+    // Track expected direction change
+    this->pending_change_.has_direction_change = true;
+    this->pending_change_.expected_direction = reverse ? DIRECTION_REVERSE : DIRECTION_FORWARD;
   }
   
   if (state_changed) {
@@ -55,12 +59,16 @@ void HubSpaceFan::control(const fan::FanCall &call) {
       fan_code = this->speed_level_to_code(this->speed);
     }
     this->parent_->send_fan_speed(fan_code);
+    
+    // Track expected speed change
+    this->pending_change_.has_speed_change = true;
+    this->pending_change_.expected_speed = static_cast<FanSpeed>(fan_code);
   }
   
   this->publish_state();
 }
 
-uint8_t HubSpaceFan::speed_level_to_code(int speed_level) {
+FanSpeed HubSpaceFan::speed_level_to_code(int speed_level) {
   switch (speed_level) {
     case 1: return FAN_LEVEL_1;
     case 2: return FAN_LEVEL_2;
@@ -94,29 +102,57 @@ bool HubSpaceFan::is_direction_reverse(uint8_t stage) {
   return (stage & 0x80) != 0;
 }
 
-void HubSpaceFan::update_from_slave(uint8_t fan_code, uint8_t stage) {
+void HubSpaceFan::update_from_slave(FanStatus status) {
+  // Check if this update matches our pending changes
+  bool speed_matches = !this->pending_change_.has_speed_change || 
+                      (status.fan_speed == this->pending_change_.expected_speed);
+  bool direction_matches = !this->pending_change_.has_direction_change || 
+                          (status.direction == this->pending_change_.expected_direction);
+  
+  // Clear pending changes if slave has caught up
+  if (speed_matches && this->pending_change_.has_speed_change) {
+    ESP_LOGV(TAG, "Slave confirmed speed change: 0x%02X", status.fan_speed);
+    this->pending_change_.has_speed_change = false;
+  }
+  
+  if (direction_matches && this->pending_change_.has_direction_change) {
+    ESP_LOGV(TAG, "Slave confirmed direction change: %s", 
+             status.direction == DIRECTION_REVERSE ? "REVERSE" : "FORWARD");
+    this->pending_change_.has_direction_change = false;
+  }
+  
   bool changed = false;
   
-  // Update speed
-  int new_speed = this->code_to_speed_level(fan_code);
-  bool new_state = (new_speed > 0);
-  
-  if (this->state != new_state) {
-    this->state = new_state;
-    changed = true;
+  // Update speed only if not waiting for our change to be reflected
+  if (speed_matches) {
+    int new_speed = this->code_to_speed_level(status.fan_speed);
+    bool new_state = (new_speed > 0);
+    
+    if (this->state != new_state) {
+      this->state = new_state;
+      changed = true;
+    }
+    
+    if (this->speed != new_speed) {
+      this->speed = new_speed;
+      changed = true;
+    }
+  } else {
+    ESP_LOGV(TAG, "Ignoring speed update from slave (waiting for expected: 0x%02X, got: 0x%02X)",
+             this->pending_change_.expected_speed, status.fan_speed);
   }
   
-  if (this->speed != new_speed) {
-    this->speed = new_speed;
-    changed = true;
-  }
-  
-  // Update direction
-  bool reverse = this->is_direction_reverse(stage);
-  fan::FanDirection new_direction = reverse ? fan::FanDirection::REVERSE : fan::FanDirection::FORWARD;
-  if (this->direction != new_direction) {
-    this->direction = new_direction;
-    changed = true;
+  // Update direction only if not waiting for our change to be reflected
+  if (direction_matches) {
+    fan::FanDirection new_direction = status.direction == FanDirection::DIRECTION_REVERSE ? fan::FanDirection::REVERSE : fan::FanDirection::FORWARD;
+    if (this->direction != new_direction) {
+      this->direction = new_direction;
+      changed = true;
+    }
+  } else {
+    ESP_LOGV(TAG, "Ignoring direction update from slave (waiting for expected: %s, got: %s)",
+             this->pending_change_.expected_direction == DIRECTION_REVERSE ? "REVERSE" : "FORWARD",
+             status.direction == DIRECTION_REVERSE ? "REVERSE" : "FORWARD");
   }
   
   if (changed) {
