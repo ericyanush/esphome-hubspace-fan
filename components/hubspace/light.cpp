@@ -48,6 +48,11 @@ void HubSpaceLight::write_state(light::LightState *state) {
   
   ESP_LOGD(TAG, "Setting brightness to %d%%, color temp to %dK (code: 0x%02X)", 
            brightness_byte, static_cast<int>(kelvin), color_code);
+
+  ESP_LOGD(TAG, "Remote values %d%%, color temp %dK (code: 0x%02X)", 
+           static_cast<int>(state->remote_values.get_brightness() * 100.0f),
+           static_cast<int>(state->remote_values.get_color_temperature_kelvin()),
+           this->kelvin_to_code(state->remote_values.get_color_temperature_kelvin()));
   
   // Track expected changes to prevent update loops
   this->pending_change_.has_brightness_change = true;
@@ -122,8 +127,8 @@ void HubSpaceLight::update_from_slave(LightStatus status) {
       call.set_transition_length(0);  // Instant update
       call.perform();
     } else if (status_on && this->state_->current_values.get_brightness() != status_brightness) {
-      ESP_LOGV(TAG, "Updating light brightness from slave: brightness=%d%%",
-               status.brightness);
+      ESP_LOGV(TAG, "Updating light brightness from slave: brightness=%d%%, original=%d%%",
+               status.brightness, static_cast<int>(this->state_->current_values.get_brightness() * 100.0f));
       auto call = this->state_->make_call();
       call.set_brightness(status_brightness);
       call.set_transition_length(0);  // Instant update

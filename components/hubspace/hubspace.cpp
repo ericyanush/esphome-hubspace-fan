@@ -240,7 +240,7 @@ void HubSpaceComponent::process_slave_status(const SlaveStatus &status) {
              status.response_cmd, this->pending_response_cmd_);
   }
   
-  this->device_status_ = DeviceStatus{
+  DeviceStatus new_status = {
     FanStatus{
       static_cast<FanSpeed>(status.fan_code),
       static_cast<FanDirection>(status.stage)
@@ -250,14 +250,50 @@ void HubSpaceComponent::process_slave_status(const SlaveStatus &status) {
       static_cast<ColorTemp>(status.color_code)
     }
   };
+  
+  // Determine if we should trigger updates
+  bool should_update_fan = false;
+  bool should_update_light = false;
+  
+  // Always update on non-keepalive responses (actual command responses)
+  if (status.response_cmd != CMD_KEEPALIVE) {
+    should_update_fan = true;
+    should_update_light = true;
+    ESP_LOGV(TAG, "Triggering updates due to non-keepalive response: 0x%02X", status.response_cmd);
+  } else if (this->has_previous_status_) {
+    // For keepalive responses, only update if there are actual changes
+    if (new_status.fan_status.fan_speed != this->previous_device_status_.fan_status.fan_speed ||
+        new_status.fan_status.direction != this->previous_device_status_.fan_status.direction) {
+      should_update_fan = true;
+      ESP_LOGV(TAG, "Fan status changed - triggering fan update");
+    }
+    
+    if (new_status.light_status.brightness != this->previous_device_status_.light_status.brightness ||
+        new_status.light_status.color_temp != this->previous_device_status_.light_status.color_temp) {
+      should_update_light = true;
+      ESP_LOGV(TAG, "Light status changed - triggering light update");
+    }
+  } else {
+    // First time receiving status, trigger initial updates
+    should_update_fan = true;
+    should_update_light = true;
+    ESP_LOGV(TAG, "First status received - triggering initial updates");
+  }
+  
+  // Store the previous status for next comparison
+  this->previous_device_status_ = this->device_status_;
+  this->has_previous_status_ = true;
+  
+  // Update current status
+  this->device_status_ = new_status;
 
-  // Update fan state if registered
-  if (this->fan_ != nullptr) {
+  // Update fan state if registered and changes detected
+  if (this->fan_ != nullptr && should_update_fan) {
     this->fan_->update_from_slave(this->device_status_.fan_status);
   }
   
-  // Update light state if registered
-  if (this->light_ != nullptr) {
+  // Update light state if registered and changes detected
+  if (this->light_ != nullptr && should_update_light) {
     this->light_->update_from_slave(this->device_status_.light_status);
   }
 }

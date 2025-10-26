@@ -135,6 +135,8 @@ class HubSpaceComponent : public Component, public uart::UARTDevice {
   static const uint32_t COMMAND_TIMEOUT_MS = 1000;  // 1s timeout for responses
   
   DeviceStatus device_status_;
+  DeviceStatus previous_device_status_;  // Track previous status to detect changes
+  bool has_previous_status_{false};  // Track if we have a previous status to compare against
 };
 
 }  // namespace hubspace
