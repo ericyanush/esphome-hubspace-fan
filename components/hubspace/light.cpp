@@ -113,6 +113,7 @@ void HubSpaceLight::update_from_slave(LightStatus status) {
 
   bool status_on = status.brightness > 0;
   float status_brightness = status.brightness / 100.0f;
+  uint8_t current_brightness_byte = static_cast<uint8_t>(this->state_->current_values.get_brightness() * 100.0f);
 
   // Update brightness/state only if not waiting for our change to be reflected
   if (brightness_matches) {
@@ -126,13 +127,13 @@ void HubSpaceLight::update_from_slave(LightStatus status) {
       call.set_state(status_brightness > 0.0f);
       call.set_transition_length(0);  // Instant update
       call.perform();
-    } else if (status_on && this->state_->current_values.get_brightness() != status_brightness) {
-      ESP_LOGV(TAG, "Updating light brightness from slave: brightness=%d%%, original=%d%%",
-               status.brightness, static_cast<int>(this->state_->current_values.get_brightness() * 100.0f));
-      auto call = this->state_->make_call();
-      call.set_brightness(status_brightness);
-      call.set_transition_length(0);  // Instant update
-      call.perform();
+    } else if (status_on && current_brightness_byte != status.brightness) {
+       ESP_LOGV(TAG, "Updating light brightness from slave: brightness=%d%%, current=%d%%",
+                 status.brightness, current_brightness_byte);
+        auto call = this->state_->make_call();
+        call.set_brightness(status_brightness);
+        call.set_transition_length(0);  // Instant update
+        call.perform();
     }
   } else {
     ESP_LOGV(TAG, "Ignoring brightness update from slave (waiting for expected: %d%%, got: %d%%)",
