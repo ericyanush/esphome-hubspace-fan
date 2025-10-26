@@ -253,12 +253,12 @@ void HubSpaceComponent::process_slave_status(const SlaveStatus &status) {
 
   // Update fan state if registered
   if (this->fan_ != nullptr) {
-    this->fan_->update_from_slave(this->device_status_->fan_status);
+    this->fan_->update_from_slave(this->device_status_.fan_status);
   }
   
   // Update light state if registered
   if (this->light_ != nullptr) {
-    this->light_->update_from_slave(this->device_status_->light_status);
+    this->light_->update_from_slave(this->device_status_.light_status);
   }
 }
 

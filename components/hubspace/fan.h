@@ -18,7 +18,7 @@ class HubSpaceFan : public fan::Fan, public Component {
 
  protected:
   void control(const fan::FanCall &call) override;
-  uint8_t speed_level_to_code(int speed_level);
+  FanSpeed speed_level_to_code(int speed_level);
   int code_to_speed_level(uint8_t code);
   bool is_direction_reverse(uint8_t stage);
 

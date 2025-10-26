@@ -52,7 +52,7 @@ void HubSpaceFan::control(const fan::FanCall &call) {
   }
   
   if (state_changed) {
-    uint8_t fan_code;
+    FanSpeed fan_code;
     if (!this->state || this->speed == 0) {
       fan_code = FAN_OFF;
     } else {
