@@ -44,7 +44,7 @@ void HubSpaceLight::write_state(light::LightState *state) {
   // Convert brightness to 0-100 scale
   uint8_t brightness_byte = static_cast<uint8_t>(brightness * 100.0f);
   
-  uint8_t color_code = this->kelvin_to_code(kelvin);
+  ColorTemp color_code = this->kelvin_to_code(kelvin);
   
   ESP_LOGD(TAG, "Setting brightness to %d%%, color temp to %dK (code: 0x%02X)", 
            brightness_byte, static_cast<int>(kelvin), color_code);
@@ -59,7 +59,7 @@ void HubSpaceLight::write_state(light::LightState *state) {
   this->parent_->send_color_temp(color_code);
 }
 
-uint8_t HubSpaceLight::kelvin_to_code(float kelvin) {
+ColorTemp HubSpaceLight::kelvin_to_code(float kelvin) {
   // Map kelvin to nearest discrete step
   // 2700K = 0x01, 3000K = 0x02, 3500K = 0x03, 4000K = 0x04, 5000K = 0x05, 6500K = 0x06
   if (kelvin <= 2850.0f) return TEMP_2700K;

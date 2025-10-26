@@ -20,7 +20,7 @@ class HubSpaceLight : public light::LightOutput, public Component {
 
  protected:
   light::LightState *state_{nullptr};
-  uint8_t kelvin_to_code(float kelvin);
+  ColorTemp kelvin_to_code(float kelvin);
   float code_to_kelvin(uint8_t code);
 
   HubSpaceComponent *parent_{nullptr};
