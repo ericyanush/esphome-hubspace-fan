@@ -2,6 +2,7 @@
 
 #include "esphome/components/fan/fan.h"
 #include "esphome/core/component.h"
+#include "hubspace.h"
 
 namespace esphome {
 namespace hubspace {
@@ -12,8 +13,25 @@ class HubSpaceFan : public fan::Fan, public Component {
   void dump_config() override;
   fan::FanTraits get_traits() override;
 
+  void set_parent(HubSpaceComponent *parent) { this->parent_ = parent; }
+  void update_from_slave(FanStatus status);
+
  protected:
   void control(const fan::FanCall &call) override;
+  FanSpeed speed_level_to_code(int speed_level);
+  int code_to_speed_level(uint8_t code);
+  bool is_direction_reverse(uint8_t stage);
+
+  HubSpaceComponent *parent_{nullptr};
+  
+  // Track pending changes to avoid update loops
+  struct PendingChange {
+    bool has_speed_change{false};
+    FanSpeed expected_speed{FAN_OFF};
+    bool has_direction_change{false};
+    FanDirection expected_direction{DIRECTION_FORWARD};
+  };
+  PendingChange pending_change_;
 };
 
 }  // namespace hubspace
